@@ -1,0 +1,5 @@
+m_O_amu=15.999
+f_thz=10.0
+K_eV_per_A2=6.546230
+t_eV=1.0
+g_example=5.0
