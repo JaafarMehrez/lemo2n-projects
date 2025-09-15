@@ -59,7 +59,7 @@ def ipr(psi):
 # Parameters
 t  = 1
 K  = 1
-N6 = 50
+N6 = 6
 g_values = np.linspace(0.0, 4.0, 81)
 min_eigvals_N6 = []
 ipr_vals = []
@@ -98,7 +98,7 @@ for g in g_vals_fine:
     eigs = np.linalg.eigvalsh(Hh)
     min_eigvals_N2.append(eigs.min())
 min_eigvals_N2 = np.array(min_eigvals_N2)
-g_c_analytic = 2.0 * np.sqrt(t*K)
+g_c_analytic = np.sqrt(2.0*t*K)
 
 # Plot 1: smallest Hessian eigenvalue vs g for N=6
 plt.figure(figsize=(4.5, 4))
