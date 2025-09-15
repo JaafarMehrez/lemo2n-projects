@@ -32,7 +32,7 @@ initial_noise = 1e-4       # tiny random seed for first g to break exact symmetr
 delta_scale = 1e-3         # small amplitude when seeding a symmetry-breaking perturbation (if you want)
 
 # Output paths
-outdir = "polaron_IPR"
+outdir = "data-Polaron-IPR"
 os.makedirs(outdir, exist_ok=True)
 
 # ---------------------------
