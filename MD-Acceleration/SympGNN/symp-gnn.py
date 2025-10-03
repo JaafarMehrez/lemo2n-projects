@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 
 # ---- Utility MLP ----
 class MLP(nn.Module):
@@ -83,23 +84,3 @@ class SymplecticInvariantGNN(nn.Module):
         dp_dt = -torch.autograd.grad(H, q, create_graph=True)[0]
 
         return H, dq_dt, dp_dt
-
-# ---- Small demonstration ----
-if __name__ == "__main__":
-    torch.set_default_dtype(torch.float64)
-    device = 'cpu'
-    N = 6
-    q = torch.randn(N,3, device=device, requires_grad=True)
-    p = torch.randn(N,3, device=device, requires_grad=True)
-
-    model = SymplecticInvariantGNN()
-    H, dq_dt, dp_dt = model(q, p)
-    print("H:", H.item())
-    print("dq_dt shape:", dq_dt.shape, "dp_dt shape:", dp_dt.shape)
-
-    # Example: take an Euler step (just demonstration; for symplectic integration, use symplectic integrators)
-    dt = 1e-3
-    q_new = q + dt * dq_dt
-    p_new = p + dt * dp_dt
-
-
