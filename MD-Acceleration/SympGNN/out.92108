@@ -1,0 +1,23 @@
+Starting optimized training at: Sun Oct  5 12:15:07 CST 2025
+CUDA_VISIBLE_DEVICES: 0
+Epoch 1, Validation RMSE: 0.0003820, learning rate: 0.0007
+Epoch 2, Validation RMSE: 0.0001615, learning rate: 0.000343
+Epoch 3, Validation RMSE: 0.0000790, learning rate: 0.00016806999999999998
+Epoch 4, Validation RMSE: 0.0002152, learning rate: 8.235429999999999e-05
+Epoch 5, Validation RMSE: 0.0000754, learning rate: 4.035360699999999e-05
+Epoch 6, Validation RMSE: 0.0000447, learning rate: 1.9773267429999995e-05
+Epoch 7, Validation RMSE: 0.0000341, learning rate: 9.688901040699997e-06
+Epoch 8, Validation RMSE: 0.0000400, learning rate: 4.747561509942998e-06
+Epoch 9, Validation RMSE: 0.0000415, learning rate: 2.3263051398720685e-06
+Epoch 10, Validation RMSE: 0.0000437, learning rate: 1.1398895185373134e-06
+Epoch 11, Validation RMSE: 0.0000456, learning rate: 5.585458640832835e-07
+Epoch 12, Validation RMSE: 0.0000449, learning rate: 2.736874734008089e-07
+Epoch 13, Validation RMSE: 0.0000513, learning rate: 1.3410686196639635e-07
+Epoch 14, Validation RMSE: 0.0000481, learning rate: 6.57123623635342e-08
+Epoch 15, Validation RMSE: 0.0000479, learning rate: 3.219905755813175e-08
+Epoch 16, Validation RMSE: 0.0000404, learning rate: 1.5777538203484557e-08
+Epoch 17, Validation RMSE: 0.0000389, learning rate: 7.730993719707432e-09
+Epoch 18, Validation RMSE: 0.0000387, learning rate: 3.788186922656641e-09
+Epoch 19, Validation RMSE: 0.0000827, learning rate: 1.856211592101754e-09
+Epoch 20, Validation RMSE: 0.0000363, learning rate: 9.095436801298594e-10
+Program finished with exit code 0 at: Sun Oct  5 15:12:16 CST 2025
