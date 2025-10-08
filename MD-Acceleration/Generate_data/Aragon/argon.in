@@ -1,0 +1,36 @@
+# Argon simulation: NPT Equilibration followed by NVE Production
+units           metal
+atom_style      atomic
+dimension       3
+boundary        p p p
+
+# Define simulation box
+lattice         fcc 4.05
+region          box block 0 4 0 4 0 4
+create_box      1 box
+create_atoms    1 box
+
+# Define Lennard-Jones interactions for Argon
+pair_style      lj/cut 10.0
+pair_coeff      1 1 0.0103 3.4 10.0  # (ε = 0.0103 eV, σ = 3.4 Å, cutoff = 10 Å)
+
+# Set atomic mass
+mass            1 39.948
+
+# Set initial velocities at 80 K (liquid phase for Argon)
+velocity        all create 80 SEED mom yes rot yes dist gaussian
+
+# ----- NPT EQUILIBRATION -----
+fix             1 all npt temp 80 80 0.1 iso 1.0 1.0 1.0
+timestep        0.001  # 1 fs
+thermo          1000
+run             100000  # 100 ps
+
+# Unfix the NPT integrator before switching to NVE
+unfix 1
+
+# ----- NVE PRODUCTION -----
+fix             2 all nve
+dump            production all custom 1 dump_SEED.lammpstrj id type xu yu zu vx vy vz
+dump_modify production format float %.16f
+run             10000  # 10 ps (10,000 steps)
