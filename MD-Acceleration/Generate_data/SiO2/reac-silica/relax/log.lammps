@@ -1,0 +1,194 @@
+LAMMPS (22 Jul 2025)
+  using 4 OpenMP thread(s) per MPI task
+units real
+atom_style full
+
+read_data silica.data
+Reading data file ...
+  orthogonal box = (-3.1662119 2.4397298 1.5469185) to (23.75179 18.145848 19.038659)
+  1 by 1 by 1 MPI processor grid
+  reading atom labelmap ...
+  reading atoms ...
+  576 atoms
+  reading velocities ...
+  576 velocities
+Finding 1-2 1-3 1-4 neighbors ...
+  special bond factors lj:    0        0        0       
+  special bond factors coul:  0        0        0       
+     0 = max # of 1-2 neighbors
+     0 = max # of 1-3 neighbors
+     0 = max # of 1-4 neighbors
+     1 = max # of special neighbors
+  special bonds CPU = 0.000 seconds
+  read_data CPU = 0.008 seconds
+
+pair_style reaxff NULL safezone 3.0 mincap 150
+pair_coeff * * ffield.reax.CHOFe Si O
+WARNING: Van der Waals parameters for element SI indicate inner wall+shielding, but earlier atoms indicate a different van der Waals method. This may cause division-by-zero errors. Keeping van der Waals setting for earlier atoms. (src/REAXFF/reaxff_ffield.cpp:255)
+WARNING: Van der Waals parameters for element AL indicate inner wall+shielding, but earlier atoms indicate a different van der Waals method. This may cause division-by-zero errors. Keeping van der Waals setting for earlier atoms. (src/REAXFF/reaxff_ffield.cpp:255)
+WARNING: Changed valency_val to valency_boc for X (src/REAXFF/reaxff_ffield.cpp:300)
+fix myqeq all qeq/reaxff 1 0.0 10.0 1.0e-6 reaxff maxiter 400
+
+group grpSi type Si
+192 atoms in group grpSi
+group grpO type O
+384 atoms in group grpO
+variable qSi equal charge(grpSi)/count(grpSi)
+variable qO equal charge(grpO)/count(grpO)
+variable vq atom q
+
+thermo 100
+thermo_style custom step temp etotal press vol v_qSi v_qO
+
+fix myspec all reaxff/species 5 1 5 relax.species element Si O
+WARNING: Resetting reneighboring criteria to 'delay 0 every 5 check no' due to fix reaxff/species averaging of bond data (src/REAXFF/fix_reaxff_species.cpp:128)
+
+velocity all create 300.0 32028
+fix mynpt all npt temp 300.0 300.0 100 aniso 1.0 1.0 1000
+timestep 0.5
+
+run 5000
+
+CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE
+
+Your simulation uses code contributions which should be cited:
+
+- Type Label Framework: https://doi.org/10.1021/acs.jpcb.3c08419
+
+@Article{Gissinger24,
+ author = {Jacob R. Gissinger, Ilia Nikiforov, Yaser Afshar, Brendon Waters, Moon-ki Choi, Daniel S. Karls, Alexander Stukowski, Wonpil Im, Hendrik Heinz, Axel Kohlmeyer, and Ellad B. Tadmor},
+ title = {Type Label Framework for Bonded Force Fields in LAMMPS},
+ journal = {J. Phys. Chem. B},
+ year =    2024,
+ volume =  128,
+ number =  13,
+ pages =   {3282--3297}
+}
+
+- pair reaxff command: doi:10.1016/j.parco.2011.08.005
+
+@Article{Aktulga12,
+ author = {H. M. Aktulga and J. C. Fogarty and S. A. Pandit and A. Y. Grama},
+ title = {Parallel Reactive Molecular Dynamics: {N}umerical Methods and Algorithmic Techniques},
+ journal = {Parallel Computing},
+ year =    2012,
+ volume =  38,
+ number =  {4--5},
+ pages =   {245--259}
+}
+
+- fix qeq/reaxff command: doi:10.1016/j.parco.2011.08.005
+
+@Article{Aktulga12,
+ author = {H. M. Aktulga and J. C. Fogarty and S. A. Pandit and A. Y. Grama},
+ title = {Parallel Reactive Molecular Dynamics: {N}umerical Methods and Algorithmic Techniques},
+ journal = {Parallel Computing},
+ year =    2012,
+ volume =  38,
+ pages =   {245--259}
+}
+
+CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE-CITE
+
+Neighbor list info ...
+  update: every = 5 steps, delay = 0 steps, check = no
+  max neighbors/atom: 2000, page size: 100000
+  master list distance cutoff = 12
+  ghost atom cutoff = 12
+  binsize = 6, bins = 5 3 3
+  2 neighbor lists, perpetual/occasional/extra = 2 0 0
+  (1) pair reaxff, perpetual
+      attributes: half, newton off, ghost
+      pair build: half/bin/ghost/newtoff
+      stencil: full/ghost/bin/3d
+      bin: standard
+  (2) fix qeq/reaxff, perpetual, copy from (1)
+      attributes: half, newton off
+      pair build: copy
+      stencil: none
+      bin: none
+Per MPI rank memory allocation (min/avg/max) = 262.1 | 262.1 | 262.1 Mbytes
+   Step          Temp          TotEng         Press          Volume         v_qSi           v_qO     
+         0   300           -82752.034      324297.89      7395.1112      1.8719625     -0.93598127   
+       100   895.4758      -83418.528     -2602.7243      7997.4748      1.7464143     -0.87320714   
+       200   767.78362     -83860.493     -779.97128      8239.5324      1.8068404     -0.90342018   
+       300   674.79632     -84282.142     -7316.5823      8265.9249      1.7913016     -0.89565081   
+       400   577.53253     -84657.534      1842.7711      8131.9732      1.8362274     -0.91811368   
+       500   500.21894     -84947.646      1839.5029      7999.4979      1.8345075     -0.91725375   
+       600   464.44368     -85187.459      1889.9449      7893.6361      1.8671553     -0.93357765   
+       700   409.27984     -85374.248     -3122.4742      7874.1885      1.8502507     -0.92512534   
+       800   366.48213     -85528.504      9525.2601      7850.0775      1.8690971     -0.93454856   
+       900   341.35492     -85649.91      -4217.5377      7853.0888      1.8632014     -0.93160071   
+      1000   298.91887     -85747.748      4739.4119      7843.1873      1.8740793     -0.93703966   
+      1100   286.15767     -85814.972     -2715.3771      7813.9064      1.867948      -0.93397401   
+      1200   281.13626     -85860.916      912.02036      7776.7402      1.8832451     -0.94162254   
+      1300   269.64845     -85877.968     -4709.7773      7803.2389      1.8561794     -0.92808969   
+      1400   273.60947     -85886.235      2647.7611      7792.1517      1.8811305     -0.94056526   
+      1500   277.03362     -85864.664     -3507.2528      7830.0079      1.8670567     -0.93352833   
+      1600   291.65777     -85826.993      238.17471      7847.7678      1.8669119     -0.93345597   
+      1700   295.65785     -85784.881     -310.39351      7840.1073      1.8784205     -0.93921025   
+      1800   308.28246     -85738.563     -824.33111      7853.3257      1.8652947     -0.93264733   
+      1900   327.46885     -85703.933     -7524.8265      7845.8094      1.8662756     -0.9331378    
+      2000   331.69581     -85691.024      687.71194      7810.1263      1.8786446     -0.93932231   
+      2100   325.31155     -85696.095      289.83693      7810.5566      1.8690909     -0.93454547   
+      2200   313.47497     -85721.107     -107.02614      7828.1434      1.8658985     -0.93294924   
+      2300   314.20885     -85760.27      -3141.2256      7816.0121      1.8801776     -0.94008879   
+      2400   289.13714     -85799.938      6941.8712      7816.9123      1.8753559     -0.93767795   
+      2500   290.23489     -85830.142     -8664.8584      7850.5578      1.8605252     -0.93026259   
+      2600   277.1904      -85847.425     -2320.4807      7860.2717      1.8713481     -0.93567403   
+      2700   280.86323     -85850.173      3171.9703      7811.3198      1.8842841     -0.94214205   
+      2800   285.27517     -85829.739      425.88267      7789.1717      1.8699752     -0.9349876    
+      2900   288.78043     -85805.305      226.88173      7801.0878      1.8735089     -0.93675445   
+      3000   305.70186     -85769.483     -442.07501      7834.6835      1.8644361     -0.93221804   
+      3100   305.9331      -85744.369      7248.023       7829.4316      1.87316       -0.93658002   
+      3200   300.82716     -85725.347      1087.3365      7814.8415      1.874486      -0.93724299   
+      3300   330.99183     -85714.305      162.28364      7825.2196      1.8673576     -0.93367881   
+      3400   316.50832     -85721.827     -3249.0208      7828.0593      1.8621036     -0.93105182   
+      3500   321.13662     -85743.3       -1523.5842      7796.7837      1.8710296     -0.93551479   
+      3600   298.10732     -85770.559      5029.6912      7802.9924      1.8649766     -0.93248829   
+      3700   286.08438     -85803.518      726.99344      7815.8559      1.8812051     -0.94060254   
+      3800   285.78949     -85821.573     -1103.094       7844.0087      1.8693143     -0.93465714   
+      3900   287.0978      -85830.809     -6597.69        7854.9093      1.8609663     -0.93048316   
+      4000   289.69386     -85832.577     -647.03924      7820.9602      1.875359      -0.93767948   
+      4100   291.6021      -85819.581      83.75301       7793.7848      1.8734777     -0.93673884   
+      4200   284.69261     -85799.574      4277.0218      7802.4043      1.8826314     -0.94131572   
+      4300   305.72059     -85769.388      2118.2686      7841.0574      1.8673618     -0.93368091   
+      4400   321.72521     -85747.871      6253.9799      7854.7247      1.8742495     -0.93712474   
+      4500   306.80828     -85732.843     -5946.3824      7855.967       1.8689664     -0.93448318   
+      4600   310.69081     -85727.813      1319.975       7815.4158      1.8632957     -0.93164783   
+      4700   314.92844     -85739.379      4909.1708      7802.4057      1.8792998     -0.93964989   
+      4800   321.90915     -85751.363     -7312.1713      7853.0397      1.8591782     -0.92958912   
+      4900   306.30119     -85779.477     -5224.5369      7843.5085      1.8687734     -0.93438668   
+      5000   303.11038     -85800.839     -3202.4815      7813.7109      1.8657329     -0.93286647   
+Loop time of 603.191 on 4 procs for 5000 steps with 576 atoms
+
+Performance: 0.358 ns/day, 67.021 hours/ns, 8.289 timesteps/s, 4.775 katom-step/s
+98.4% CPU use with 1 MPI tasks x 4 OpenMP threads
+
+MPI task timing breakdown:
+Section |  min time  |  avg time  |  max time  |%varavg| %total
+---------------------------------------------------------------
+Pair    | 465.54     | 465.54     | 465.54     |   0.0 | 77.18
+Bond    | 0.0014937  | 0.0014937  | 0.0014937  |   0.0 |  0.00
+Neigh   | 43.444     | 43.444     | 43.444     |   0.0 |  7.20
+Comm    | 0.30226    | 0.30226    | 0.30226    |   0.0 |  0.05
+Output  | 0.0034635  | 0.0034635  | 0.0034635  |   0.0 |  0.00
+Modify  | 93.861     | 93.861     | 93.861     |   0.0 | 15.56
+Other   |            | 0.03884    |            |       |  0.01
+
+Nlocal:            576 ave         576 max         576 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:           5672 ave        5672 max        5672 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:         240980 ave      240980 max      240980 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+
+Total # of neighbors = 240980
+Ave neighs/atom = 418.36806
+Ave special neighs/atom = 0
+Neighbor list builds = 1000
+Dangerous builds not checked
+
+write_data relax.data nofix
+System init for write_data ...
+Total wall time: 0:10:03
