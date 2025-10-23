@@ -28,6 +28,7 @@ Usage (example):
 The implementation intentionally uses different variable names and algorithms
 compared to other sample code; variable and class names are distinct.
 
+Author: Jaafar Mehrez (jaafarmehrez@sjtu.edu.cn)
 """
 
 from __future__ import annotations
