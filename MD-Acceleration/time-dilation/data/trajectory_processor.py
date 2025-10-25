@@ -1,703 +1,541 @@
 """
-trajectory_processor.py
+processor of MD trajectories, this code is influenced by 
+https://github.com/IBM/trajcast/blob/main/trajcast/data/trajectory.py
 
-A flexible trajectory reader/processor that supports multiple input formats (via
-optional backends ASE, MDAnalysis, mdtraj) and writes processed trajectories to
-HDF5, NPZ, and extended XYZ formats (and optionally Zarr) suitable for dataset creation.
+the modifications include:
+1. Adding partial_charge and update_partial_charge keys to the computed fields
+2. Fix the problem of mapping the partial charges instead of the atomic number in the resulting trajectory
+3. Replacing npz file format with hdf5 for large trajectory files
 
-Features:
-- Reads common trajectory formats: LAMMPS dump (lammpstrj), XYZ, DCD, XTC, TRR, PDB, GRO,
-  and many others supported by ASE/MDAnalysis/mdtraj.
-- Detects available backend automatically and falls back gracefully.
-- Keeps both wrapped (as-read) and unwrapped positions.
-- Robust unwrapping for variable box (NPT) using fractional-coordinate tracking.
-- Computes displacements and, optionally, recomputes velocities from unwrapped
-  positions using finite differences (central difference where possible).
-- Supports optional per-atom partial charges and stores both original and
-  post-processed ("updated") charges.
-- Writes output to HDF5 (.h5) using a compact layout, to NPZ packages, and to
-  extended XYZ format. Optionally supports Zarr if available.
-
-Usage (example):
-    proc = TrajectoryProcessor()
-    data = proc.load('traj.lammpstrj', fmt='lammps')
-    proc.process(recompute_velocities=True, dt=1.0)
-    proc.save('processed.h5', format='hdf5')
-    proc.save('traj.xyz', format='extxyz')
-
-The implementation intentionally uses different variable names and algorithms
-compared to other sample code; variable and class names are distinct.
-
-Author: Jaafar Mehrez (jaafarmehrez@sjtu.edu.cn)
+Modified by: Jaafar Mehrez (jaafarmehrez@sjtu.edu.cn)
 """
 
-from __future__ import annotations
-
 import os
-import math
-import warnings
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Union
 
+import ase
+import ase.io
 import numpy as np
 
-# Lazy imports for optional backends
-_try_ase = False
-_try_mdanalysis = False
-_try_mdtraj = False
-_try_zarr = False
-try:
-    import ase.io
-    _try_ase = True
-except Exception:
-    pass
-try:
-    import MDAnalysis as mda
-    _try_mdanalysis = True
-except Exception:
-    pass
-try:
-    import mdtraj as md
-    _try_mdtraj = True
-except Exception:
-    pass
-try:
-    import zarr
-    _try_zarr = True
-except Exception:
-    pass
+import h5py
 
-# HDF5 writer
-try:
-    import h5py
-except Exception as e:
-    raise ImportError("h5py is required to write HDF5 output: install h5py") from e
+from _keys import (
+    ASE_ARRAY_FIELDS,
+    ASE_INFO_FIELDS,
+    CELL_KEY,
+    DISPLACEMENTS_KEY,
+    FORCES_KEY,
+    INPUT_KEY_MAPPING,
+    PBC_KEY,
+    POSITIONS_KEY,
+    TIMESTEP_KEY,
+    TOTAL_ENERGY_KEY,
+    UPDATE_KEY,
+    VELOCITIES_KEY,
+    PARTIAL_CHARGES_KEY,
+    UPDATE_PARTIAL_CHARGES_KEY,
+)
+from atomic_computes import align_vectors_with_periodicity
+from misc import (
+    convert_ase_atoms_to_dictionary,
+    invert_dictionary,
+    string2index,
+    truncate_dictionary,
+)
 
+from _lammps import lammps_dump_to_ase_atoms
 
-class FrameBatch:
-    """Container for trajectory data after loading and processing.
-
-    Attributes
-    ----------
-    pos_wrapped : np.ndarray
-        shape (n_frames, n_atoms, 3)
-    pos_unwrapped : np.ndarray
-        shape (n_frames, n_atoms, 3)
-    vel : Optional[np.ndarray]
-        as-read velocities, shape (n_frames, n_atoms, 3) or None
-    vel_corrected : Optional[np.ndarray]
-        recomputed velocities from unwrapped positions (if requested)
-    atom_charges : Optional[np.ndarray]
-        partial charges per frame, shape (n_frames, n_atoms) or None
-    atom_charges_corrected : Optional[np.ndarray]
-        post-processed charges (if any)
-    box : Optional[np.ndarray]
-        shape (n_frames, 3, 3) box matrices (row-wise vectors) if available
-    times : Optional[np.ndarray]
-        frame times in physical units if available
-    atom_types : Optional[np.ndarray]
-        atom type information, shape (n_atoms,) or None
-    metadata : dict
-        arbitrary metadata
-    """
-
-    def __init__(self):
-        self.pos_wrapped = None
-        self.pos_unwrapped = None
-        self.vel = None
-        self.vel_corrected = None
-        self.atom_charges = None
-        self.atom_charges_corrected = None
-        self.box = None
-        self.times = None
-        self.atom_types = None
-        self.meta: Dict[str, Any] = {}
+_TRAJECTORY_FIELDS: Set[str] = {
+    POSITIONS_KEY,
+    PBC_KEY,
+    CELL_KEY,
+    FORCES_KEY,
+    VELOCITIES_KEY,
+    TOTAL_ENERGY_KEY,
+    DISPLACEMENTS_KEY,
+    TIMESTEP_KEY,
+    PARTIAL_CHARGES_KEY,
+    UPDATE_PARTIAL_CHARGES_KEY,
+}
 
 
-class TrajectoryProcessor:
-    """Main class to load, process, and save trajectory data.
+class Trajectory:
 
-    The object attempts to autodetect a capable reader from installed
-    dependencies. For exotic formats or constrained environments, the user
-    can explicitly select a backend via the `backend` argument.
-    """
+    def __init__(
+        self,
+        data: Union[List[ase.Atoms], Dict] = None,
+        available_fields: Set[str] = _TRAJECTORY_FIELDS,
+    ):
 
-    def __init__(self, backend: Optional[str] = None):
-        self.backend = backend
-        self._preferred = backend
-        self.batch = FrameBatch()
+        self.available_fields = available_fields
+        self.data = data
 
-    # ----------------------------- Loading ---------------------------------
-    def load(self, path: str, fmt: Optional[str] = None, backend: Optional[str] = None) -> FrameBatch:
-        """Load a trajectory into memory using an available backend.
-
-        Parameters
-        ----------
-        path : str
-            Path to trajectory file (or to a directory with frames)
-        fmt : Optional[str]
-            Hint for format (e.g. 'lammps', 'xyz', 'dcd')
-        backend : Optional[str]
-            Force a particular backend: 'ase', 'mda', 'mdtraj'
-        """
-        chosen = backend or self._preferred
-        loaders = []
-        if chosen is None or chosen == 'ase':
-            loaders.append(('ase', self._load_with_ase))
-        if chosen is None or chosen == 'mda':
-            loaders.append(('mda', self._load_with_mdanalysis))
-        if chosen is None or chosen == 'mdtraj':
-            loaders.append(('mdtraj', self._load_with_mdtraj))
-
-        last_err = None
-        for name, func in loaders:
-            try:
-                func(path, fmt)
-                self.batch.meta['reader_used'] = name
-                return self.batch
-            except Exception as e:
-                last_err = e
-                continue
-
-        raise RuntimeError(f"Failed to load trajectory with available backends: {last_err}")
-
-    def _load_with_ase(self, path: str, fmt: Optional[str] = None):
-        if not _try_ase:
-            raise RuntimeError('ASE not installed')
-        # ASE can read many single-file formats with ase.io.read(..., index=slice(None))
-        try:
-            atoms_list = ase.io.read(path, index=slice(None))
-        except Exception as e:
-            raise
-
-        if isinstance(atoms_list, ase.Atoms):
-            atoms_list = [atoms_list]
-
-        nframes = len(atoms_list)
-        natoms = len(atoms_list[0].get_positions())
-
-        positions = np.empty((nframes, natoms, 3), dtype=float)
-        boxes = np.empty((nframes, 3, 3), dtype=float)
-        velocities = None
-        charges = None
-        atom_types = None
-        times = []
-
-        for i, at in enumerate(atoms_list):
-            positions[i] = np.asarray(at.get_positions())
-            cell = at.get_cell()
-            if cell is None:
-                boxes[i] = np.eye(3)
-            else:
-                boxes[i] = np.asarray(cell)
-            # ASE sometimes stores velocities in arrays
-            try:
-                vel = at.get_velocities()
-                if vel is not None:
-                    if velocities is None:
-                        velocities = np.zeros((nframes, natoms, 3), dtype=float)
-                    velocities[i] = np.asarray(vel)
-            except Exception:
-                pass
-            # ASE can store atomic charges in 'arrays' under Atoms.info or at.arrays
-            try:
-                if 'charges' in at.arrays:
-                    if charges is None:
-                        charges = np.zeros((nframes, natoms), dtype=float)
-                    charges[i] = np.asarray(at.arrays['charges'])
-            except Exception:
-                pass
-            # Get atom types from first frame
-            if i == 0:
-                try:
-                    atom_types = np.asarray(at.get_chemical_symbols())
-                except Exception:
-                    try:
-                        atom_types = np.asarray(at.get_atomic_numbers())
-                    except Exception:
-                        # Fallback: use sequential numbers
-                        atom_types = np.arange(1, natoms + 1)
-
-        self.batch.pos_wrapped = positions
-        self.batch.box = boxes
-        self.batch.vel = velocities
-        self.batch.atom_charges = charges
-        self.batch.atom_types = atom_types
-        self.batch.meta['source_path'] = os.path.abspath(path)
-
-    def _load_with_mdanalysis(self, path: str, fmt: Optional[str] = None):
-        if not _try_mdanalysis:
-            raise RuntimeError('MDAnalysis not installed')
-        u = mda.Universe(path)
-        nframes = len(u.trajectory)
-        natoms = u.atoms.n_atoms
-        positions = np.empty((nframes, natoms, 3), dtype=float)
-        boxes = np.empty((nframes, 3, 3), dtype=float)
-        velocities = None
-        charges = None
-        atom_types = None
-        times = np.empty((nframes,), dtype=float)
-
-        # Get atom types/names
-        try:
-            atom_types = np.array([atom.type for atom in u.atoms])
-        except Exception:
-            try:
-                atom_types = np.array([atom.name for atom in u.atoms])
-            except Exception:
-                atom_types = np.arange(1, natoms + 1)
-
-        for fi, ts in enumerate(u.trajectory):
-            positions[fi] = u.atoms.positions.copy()
-            # box in MDAnalysis is ts.dimensions (6 or 9). If 6, convert to matrix
-            dims = ts.dimensions
-            if len(dims) >= 9:
-                boxes[fi] = np.reshape(dims[:9], (3, 3))
-            elif len(dims) >= 6:
-                # a, b, c, alpha, beta, gamma
-                a, b, c, alpha, beta, gamma = dims[:6]
-                # simplified orthorhombic assumption if angles are 90
-                boxes[fi] = np.diag([a, b, c])
-            else:
-                boxes[fi] = np.eye(3)
-            try:
-                vel = u.atoms.velocities
-                if vel is not None:
-                    if velocities is None:
-                        velocities = np.zeros((nframes, natoms, 3), dtype=float)
-                    velocities[fi] = vel.copy()
-            except Exception:
-                pass
-            times[fi] = ts.time
-            # extra attributes like partial_charges can sometimes be in atomgroups; try to find
-            try:
-                if hasattr(u.atoms, 'charges'):
-                    if charges is None:
-                        charges = np.zeros((nframes, natoms), dtype=float)
-                    charges[fi] = u.atoms.charges.copy()
-            except Exception:
-                pass
-
-        self.batch.pos_wrapped = positions
-        self.batch.box = boxes
-        self.batch.vel = velocities
-        self.batch.atom_charges = charges
-        self.batch.atom_types = atom_types
-        self.batch.times = times
-        self.batch.meta['source_path'] = os.path.abspath(path)
-
-    def _load_with_mdtraj(self, path: str, fmt: Optional[str] = None):
-        if not _try_mdtraj:
-            raise RuntimeError('mdtraj not installed')
-        traj = md.load(path)
-        positions = traj.xyz.copy()  # shape (n_frames, n_atoms, 3)
-        nframes = positions.shape[0]
-        natoms = positions.shape[1]
-        boxes = np.zeros((nframes, 3, 3), dtype=float)
-        
-        # Get atom types/names
-        try:
-            atom_types = np.array([atom.element.symbol for atom in traj.topology.atoms])
-        except Exception:
-            try:
-                atom_types = np.array([atom.name for atom in traj.topology.atoms])
-            except Exception:
-                atom_types = np.arange(1, natoms + 1)
-                
-        for i in range(nframes):
-            # mdtraj stores unitcell_lengths and angles
-            if traj.unitcell_lengths is not None:
-                L = traj.unitcell_lengths[i]
-                boxes[i] = np.diag(L)
-            else:
-                boxes[i] = np.eye(3)
-        velocities = None
-        charges = None
-        # mdtraj does not store per-atom charges by default
-
-        self.batch.pos_wrapped = positions
-        self.batch.box = boxes
-        self.batch.vel = velocities
-        self.batch.atom_charges = charges
-        self.batch.atom_types = atom_types
-        self.batch.meta['source_path'] = os.path.abspath(path)
-
-    # --------------------------- Processing --------------------------------
-    def process(self,
-                recompute_velocities: bool = False,
-                dt: Optional[float] = None,
-                remove_com_motion: bool = True,
-                handle_charges: bool = True):
-        """Process the loaded trajectory.
-
-        Steps performed:
-        - Unwrap positions using fractional-coordinate nearest-image method which
-          works even for changing box sizes (NPT).
-        - Optionally recompute velocities from unwrapped positions using central
-          differences (requires dt or derivable from time data).
-        - Optionally remove center-of-mass motion from velocities.
-        - Preserve original charges if present and optionally create a "corrected"
-          charge array (currently identity transform, place for custom routines).
-
-        Parameters
-        ----------
-        recompute_velocities : bool
-            If True, velocities will be recomputed from unwrapped positions.
-        dt : Optional[float]
-            Time-step in same units as frame times. If None, attempt to infer
-            from batch.times. Required to recompute velocities.
-        remove_com_motion : bool
-            If True, subtract COM velocity from per-atom velocities.
-        handle_charges : bool
-            If True, copy atom_charges to atom_charges_corrected (placeholder
-            for user-supplied charge processing).
-        """
-        if self.batch.pos_wrapped is None:
-            raise RuntimeError('No trajectory loaded')
-
-        X = np.asarray(self.batch.pos_wrapped, dtype=float)
-        nframes, natoms, _ = X.shape
-
-        boxmats = self.batch.box
-        if boxmats is None:
-            # If no box provided, assume infinite box (no PBC) -> unwrapped = wrapped
-            self.batch.pos_unwrapped = X.copy()
+    def _validate_chosen_fields(self, chosen_fields: Set[str]) -> bool:
+        if not chosen_fields.issubset(
+            self.available_fields
+        ) or not chosen_fields.issuperset(
+            set((POSITIONS_KEY, PARTIAL_CHARGES_KEY, PBC_KEY, CELL_KEY))
+        ):
+            return False
         else:
-            self.batch.pos_unwrapped = _unwrap_positions_fractional(X, boxmats)
+            return True
 
-        # compute displacements (simple forward difference r[t+1]-r[t]) last frame zeros
-        disp = np.empty_like(self.batch.pos_unwrapped)
-        disp[:-1] = self.batch.pos_unwrapped[1:] - self.batch.pos_unwrapped[:-1]
-        disp[-1] = np.zeros((natoms, 3))
-        self.batch.meta['displacements'] = disp
+    def compute_additional_fields(
+        self,
+        add_fields: Set[str] = {DISPLACEMENTS_KEY},
+        time_step: int = 1,
+        time_step_in_fs: float = None,
+        truncate: bool = True,
+    ):
+        time_between_frames = (
+            self.time_between_frames if hasattr(self, "time_between_frames") else 1.0
+        )
 
-        # velocities
-        if recompute_velocities:
-            if dt is None:
-                if self.batch.times is not None:
-                    # infer average dt
-                    dts = np.diff(self.batch.times)
-                    if np.any(dts <= 0):
-                        raise RuntimeError('Non-positive time differences found; specify dt')
-                    dt = float(np.mean(dts))
-                else:
-                    raise RuntimeError('dt not provided and times missing; cannot recompute velocities')
-            vnew = _compute_vel_from_positions(self.batch.pos_unwrapped, dt)
-            if remove_com_motion:
-                vnew = _remove_com_velocity(vnew)
-            self.batch.vel_corrected = vnew
+        if time_step_in_fs:
+            time_step = int(time_step_in_fs / time_between_frames)
+
+        if DISPLACEMENTS_KEY in add_fields:
+            self.data = compute_atomic_displacement_vectors(
+                trajectory_data=self.data,
+                time_step=time_step,
+                time_between_frames=time_between_frames,
+                key_mapping=self.mapping_available_fields,
+            )
+            self.available_fields.update({DISPLACEMENTS_KEY, TIMESTEP_KEY})
+
+        update_fields = [field for field in add_fields if UPDATE_KEY in field]
+        if update_fields:
+            raw_fields = [field.split(f"{UPDATE_KEY}_")[-1] for field in update_fields]
+            if not set(raw_fields).issubset(self.available_fields):
+                raise KeyError(
+                    "Some of the update fields cannot be used as we do not have the original field either."
+                )
+            self.data = get_desired_field_values_of_next_frame(
+                fields=raw_fields,
+                trajectory_data=self.data,
+                time_step=time_step,
+                key_mapping=self.mapping_available_fields,
+            )
+
+            self.available_fields.update(set(update_fields))
+
+        if truncate:
+            self._truncate_trajectory(time_step=time_step)
+
+
+class ASETrajectory(Trajectory):
+    def __init__(
+        self,
+        ase_atoms_list: List[ase.Atoms],
+        key_mapping: Optional[Dict[str, str]] = invert_dictionary(INPUT_KEY_MAPPING),
+        time_between_frames: Optional[float] = 1.0,
+        apply_wrapping: Optional[bool] = False,
+        apply_unwrapping: Optional[bool] = False,
+    ):
+        super().__init__()
+
+        self.data = ase_atoms_list
+        self.n_frames = len(ase_atoms_list)
+        dictionary = convert_ase_atoms_to_dictionary(self.data[0], rename=False)
+
+        self.mapping_available_fields = {
+            key_mapping.get(key, key): key for key in dictionary.keys()
+        }
+        self.available_fields = set(self.mapping_available_fields.keys())
+        self.time_between_frames = time_between_frames
+
+        if CELL_KEY in self.available_fields:
+            self._guess_wrapping()
+
+        if apply_unwrapping:
+            self.unwrap()
+        if apply_wrapping:
+            self.wrap()
+
+    def _guess_wrapping(self):
+        scaled_pos = self.data[-1].get_scaled_positions(wrap=False)
+        if np.min(scaled_pos) < 0 or np.max(scaled_pos) > 1:
+            self._is_wrapped = False
         else:
-            # keep original velocities in vel_corrected if present
-            if self.batch.vel is not None:
-                v = np.asarray(self.batch.vel)
-                if remove_com_motion:
-                    v = _remove_com_velocity(v)
-                self.batch.vel_corrected = v
+            self._is_wrapped = True
 
-        if handle_charges:
-            if self.batch.atom_charges is not None:
-                self.batch.atom_charges_corrected = np.asarray(self.batch.atom_charges).copy()
-            else:
-                self.batch.atom_charges_corrected = None
+    @property
+    def is_wrapped(self):
+        return self._is_wrapped
 
-    # ---------------------------- Saving ----------------------------------
-    def save(self, outpath: str, format: str = 'auto', **kwargs):
-        """Save the processed batch in the specified format.
+    @is_wrapped.setter
+    def is_wrapped(self, value: bool):
         
-        Parameters
-        ----------
-        outpath : str
-            Output file path
-        format : str
-            Output format: 'hdf5', 'npz', 'extxyz', 'zarr', or 'auto' (detect from extension)
-        **kwargs
-            Additional format-specific options
-        """
-        if format == 'auto':
-            format = self._detect_format(outpath)
+        if not value:
+            self.unwrap()
+        else:
+            self.wrap()
+
+    def _truncate_trajectory(self, time_step):
+        self.data = self.data[:-time_step]
+
+    @classmethod
+    def read_from_file(
+        cls,
+        root: str,
+        filename: str,
+        key_mapping: Optional[Dict[str, str]] = invert_dictionary(INPUT_KEY_MAPPING),
+        frame_interval: Optional[float] = None,
+        wrapper: Optional[str] = None,
+        wrapper_kwargs: Optional[Dict] = None,
+        apply_wrapping: Optional[bool] = False,
+        apply_unwrapping: Optional[bool] = False,
+        **ase_kwargs,
+    ):
+        
+        path_to_file = os.path.join(root, filename)
+        if not os.path.exists(path_to_file):
+            raise FileNotFoundError(f"Path:{path_to_file} does not exist.")
+
+        if not wrapper:
+            ase_atoms_list = ase.io.read(path_to_file, **ase_kwargs)
+
+            if hasattr(ase_atoms_list[0], "calc") and ase_atoms_list[0].calc:
+                for frame in ase_atoms_list:
+                    frame.arrays[FORCES_KEY] = frame.get_forces()
+
+        else:
+            ase_atoms_list = {"lammps": lammps_dump_to_ase_atoms}[wrapper](
+                path_to_file=path_to_file, **wrapper_kwargs, **ase_kwargs
+            )
             
-        format = format.lower()
-        if format in ('hdf5', 'h5'):
-            self.save_hdf5(outpath, **kwargs)
-        elif format == 'npz':
-            self.save_npz(outpath, **kwargs)
-        elif format in ('extxyz', 'xyz'):
-            self.save_extxyz(outpath, **kwargs)
-        elif format == 'zarr':
-            self.save_zarr(outpath, **kwargs)
-        else:
-            raise ValueError(f"Unsupported format: {format}")
+        if not isinstance(ase_atoms_list, List):
+            raise TypeError(
+                f"Expected a list but received {type(ase_atoms_list).__name__}"
+            )
 
-    def _detect_format(self, outpath: str) -> str:
-        """Detect format from file extension."""
-        ext = os.path.splitext(outpath)[1].lower()
-        if ext in ('.h5', '.hdf5'):
-            return 'hdf5'
-        elif ext == '.npz':
-            return 'npz'
-        elif ext in ('.xyz', '.extxyz'):
-            return 'extxyz'
-        elif ext in ('.zarr',):
-            return 'zarr'
-        else:
-            # Default to HDF5 for unknown extensions
-            return 'hdf5'
+        step_read = string2index(ase_kwargs.get("index")).step
+        step_read = 1 if not step_read else step_read
+        frame_interval = (
+            frame_interval
+            if frame_interval
+            else ase_atoms_list[0].info.get(TIMESTEP_KEY, 1.0)
+        )
+        time_between_frames = step_read * frame_interval
 
-    def save_hdf5(self, outpath: str, compress: bool = True):
-        """Save the processed batch to an HDF5 file.
+        return cls(
+            ase_atoms_list=ase_atoms_list,
+            key_mapping=key_mapping,
+            time_between_frames=time_between_frames,
+            apply_wrapping=apply_wrapping,
+            apply_unwrapping=apply_unwrapping,
+        )
 
-        Layout:
-        /positions_wrapped    (n_frames, n_atoms, 3)
-        /positions_unwrapped  (n_frames, n_atoms, 3)
-        /vel_corrected        (n_frames, n_atoms, 3)  # if present
-        /charges              (n_frames, n_atoms)     # if present
-        /box                  (n_frames, 3, 3)
-        /times                (n_frames,)
-        /metadata             (attrs)
-        """
-        if self.batch.pos_unwrapped is None:
-            raise RuntimeError('Process the trajectory before saving')
-
-        with h5py.File(outpath, 'w') as f:
-            kwargs = {'compression': 'gzip'} if compress else {}
-            f.create_dataset('positions_wrapped', data=self.batch.pos_wrapped, **kwargs)
-            f.create_dataset('positions_unwrapped', data=self.batch.pos_unwrapped, **kwargs)
-            if self.batch.vel_corrected is not None:
-                f.create_dataset('velocities', data=self.batch.vel_corrected, **kwargs)
-            if self.batch.atom_charges is not None:
-                f.create_dataset('charges', data=self.batch.atom_charges, **kwargs)
-            if self.batch.atom_charges_corrected is not None:
-                f.create_dataset('charges_corrected', data=self.batch.atom_charges_corrected, **kwargs)
-            if self.batch.box is not None:
-                f.create_dataset('box', data=self.batch.box, **kwargs)
-            if self.batch.times is not None:
-                f.create_dataset('times', data=self.batch.times, **kwargs)
-            if self.batch.atom_types is not None:
-                # Store atom types as variable-length strings
-                atom_types_str = [str(t) for t in self.batch.atom_types]
-                f.create_dataset('atom_types', data=atom_types_str, dtype=h5py.special_dtype(vlen=str))
-            # write simple metadata as attributes
-            for k, v in self.batch.meta.items():
-                try:
-                    f.attrs[k] = str(v)
-                except Exception:
-                    pass
-
-    def save_npz(self, outpath: str):
-        """Save core arrays to a compressed numpy .npz file.
-
-        Keys: pos_wrapped, pos_unwrapped, velocities, charges, charges_corrected, box, times
-        """
-        arrs = {'pos_wrapped': self.batch.pos_wrapped, 'pos_unwrapped': self.batch.pos_unwrapped}
-        if self.batch.vel_corrected is not None:
-            arrs['velocities'] = self.batch.vel_corrected
-        if self.batch.atom_charges is not None:
-            arrs['charges'] = self.batch.atom_charges
-        if self.batch.atom_charges_corrected is not None:
-            arrs['charges_corrected'] = self.batch.atom_charges_corrected
-        if self.batch.box is not None:
-            arrs['box'] = self.batch.box
-        if self.batch.times is not None:
-            arrs['times'] = self.batch.times
-        if self.batch.atom_types is not None:
-            arrs['atom_types'] = self.batch.atom_types
-        np.savez_compressed(outpath, **arrs)
-
-    def save_extxyz(self, outpath: str, use_unwrapped: bool = True, include_velocities: bool = True, 
-                   include_charges: bool = True, include_box: bool = True):
-        """Save the processed trajectory in extended XYZ format.
+    def write_to_file(
+        self,
+        root: str = "./",
+        filename_prefix: Optional[str] = "trajectory",
+        chosen_fields: Optional[Set[str]] = set(),
+        **ase_kwargs,
+    ):
         
-        Extended XYZ format can store atomic positions, velocities, charges, and cell information.
+        if not os.path.exists(root):
+            raise FileNotFoundError("Directory does not exist, please create it!")
+
+        if not chosen_fields:
+            chosen_fields = self.available_fields
+
+        if not self._validate_chosen_fields(chosen_fields):
+            raise KeyError(
+                "Some elements of chosen fields are not available in the trajectory or minimum requirements (atomic numbers and positions) not satisfied."
+            )
+
+        modified_ase_atoms_list = self._modify_ase_atoms_list_based_on_chosen_fields(
+            chosen_fields=chosen_fields
+        )
+
         
-        Parameters
-        ----------
-        outpath : str
-            Output .xyz file path
-        use_unwrapped : bool
-            If True, use unwrapped positions; otherwise use wrapped positions
-        include_velocities : bool
-            If True, include velocity information
-        include_charges : bool
-            If True, include charge information  
-        include_box : bool
-            If True, include periodic box information
-        """
-        if self.batch.pos_unwrapped is None:
-            raise RuntimeError('Process the trajectory before saving')
+        file_format = (
+            ase_kwargs.get("format") if "format" in ase_kwargs.keys() else "extxyz"
+        )
+        path_to_file = os.path.join(root, f"{filename_prefix}.{file_format}")
+
+        ase.io.write(path_to_file, modified_ase_atoms_list, **ase_kwargs)
+
+    def _modify_ase_atoms_list_based_on_chosen_fields(
+        self, chosen_fields: Set[str]
+    ) -> List[ase.Atoms]:
+        
+        local_ase_atoms_list = self.data.copy()
+        for frame in local_ase_atoms_list:
             
-        if self.batch.atom_types is None:
-            raise RuntimeError('Atom type information required for XYZ format')
+            frame.set_calculator()
             
-        n_frames, n_atoms, _ = self.batch.pos_unwrapped.shape
+            [
+                frame.info.pop(self.mapping_available_fields[key])
+                for key in ASE_INFO_FIELDS
+                if {v: k for k, v in self.mapping_available_fields.items()}.get(key)
+                in frame.info
+                and key not in chosen_fields
+            ]
+            
+            [
+                frame.arrays.pop(self.mapping_available_fields[key])
+                for key in ASE_ARRAY_FIELDS
+                if {v: k for k, v in self.mapping_available_fields.items()}.get(key)
+                in frame.arrays.keys()
+                and key not in chosen_fields
+            ]
+
+        return local_ase_atoms_list
+
+    def unwrap(self):
+        if not self.data[0].__getattribute__(CELL_KEY):
+            raise KeyError(
+                "Cell not found, please define otherwise how do you expect to unwrap?"
+            )
+
+        coordinates = np.asarray([frame.positions for frame in self.data])
+
+        if not np.all(self.data[0].cell == self.data[1].cell):
+            raise NotImplementedError("Only NVT Ensemble so far.")
+
+        displacement_vectors = np.diff(
+            coordinates, prepend=coordinates[0][np.newaxis, :, :], axis=0
+        )
+        displacement_vectors_unwrapped = align_vectors_with_periodicity(
+            displacement_vectors, self.data[0].cell
+        )
+        coordinates = coordinates[0] + np.cumsum(displacement_vectors_unwrapped, axis=0)
+
+        for frame_index, frame in enumerate(self.data):
+            frame.set_positions(coordinates[frame_index], apply_constraint=False)
+
+        self._is_wrapped = False
+
+    def wrap(self):
+        if not self.data[0].__getattribute__(CELL_KEY):
+            raise KeyError(
+                "Cell not found, please define otherwise how do you expect to unwrap?"
+            )
+
+        for frame_index, frame in enumerate(self.data):
+            frame.wrap()
+
+        self._is_wrapped = True
+
+
+class HDF5Trajectory(Trajectory):
+    def __init__(
+        self,
+        hdf5_dictionary: Dict,
+        key_mapping: Dict[str, str] = invert_dictionary(INPUT_KEY_MAPPING),
+    ):
+        super().__init__()
+
+        self.data = hdf5_dictionary
         
-        with open(outpath, 'w') as f:
-            for frame_idx in range(n_frames):
-                # Write number of atoms
-                f.write(f"{n_atoms}\n")
+        self.mapping_available_fields = {
+            key_mapping.get(key, key): key for key in self.data.keys()
+        }
+        self.n_frames = self.data[self.mapping_available_fields[POSITIONS_KEY]].shape[0]
+        self.available_fields = set(self.mapping_available_fields.keys())
+
+    def _truncate_trajectory(self, time_step):
+        self.data = truncate_dictionary(
+            dictionary=self.data,
+            n_values=self.n_frames - time_step,
+        )
+
+    @classmethod
+    def read_from_file(
+        cls,
+        root: str,
+        filename: str,
+        indices: Optional[Union[str, List[int]]] = ":",
+        key_mapping: Dict[str, str] = invert_dictionary(INPUT_KEY_MAPPING),
+    ):
+        import h5py
+        
+        path_to_file = os.path.join(root, filename)
+        
+        if not os.path.exists(path_to_file):
+            raise FileNotFoundError(f"HDF5 file not found: {path_to_file}")
+        
+        hdf5_dictionary = {}
+        with h5py.File(path_to_file, 'r') as h5file:
+            
+            if isinstance(indices, str):
+                new_indices = string2index(indices)
+            else:
+                new_indices = indices
                 
-                # Write properties line
-                properties = []
-                
-                # Add box information if available
-                if include_box and self.batch.box is not None:
-                    box = self.batch.box[frame_idx]
-                    # Convert 3x3 matrix to 9 numbers in row-major order
-                    box_flat = ' '.join(str(x) for x in box.ravel())
-                    properties.append(f'Lattice="{box_flat}"')
-                
-                # Add time if available
-                if self.batch.times is not None:
-                    properties.append(f'Time={self.batch.times[frame_idx]}')
-                
-                # Add Properties field describing the columns
-                prop_columns = ["species:S:1", "pos:R:3"]
-                if include_velocities and self.batch.vel_corrected is not None:
-                    prop_columns.append("vel:R:3")
-                if include_charges and self.batch.atom_charges_corrected is not None:
-                    prop_columns.append("charge:R:1")
-                
-                properties.append(f'Properties={"".join(prop_columns)}')
-                
-                f.write(' '.join(properties) + '\n')
-                
-                # Write atom data
-                positions = self.batch.pos_unwrapped[frame_idx] if use_unwrapped else self.batch.pos_wrapped[frame_idx]
-                
-                for atom_idx in range(n_atoms):
-                    line_parts = [str(self.batch.atom_types[atom_idx])]
-                    
-                    # Add position
-                    line_parts.extend(f"{x:.8f}" for x in positions[atom_idx])
-                    
-                    # Add velocity if available
-                    if include_velocities and self.batch.vel_corrected is not None:
-                        line_parts.extend(f"{v:.8f}" for v in self.batch.vel_corrected[frame_idx, atom_idx])
-                    
-                    # Add charge if available
-                    if include_charges and self.batch.atom_charges_corrected is not None:
-                        line_parts.append(f"{self.batch.atom_charges_corrected[frame_idx, atom_idx]:.8f}")
-                    
-                    f.write(' '.join(line_parts) + '\n')
+            for key in h5file.keys():
+                dataset = h5file[key]
+                if isinstance(dataset, h5py.Dataset):
+                    hdf5_dictionary[key] = dataset[new_indices]
 
-    def save_zarr(self, outpath: str):
-        if not _try_zarr:
-            raise RuntimeError('zarr not installed')
-        store = zarr.open(outpath, mode='w')
-        store.create_dataset('pos_wrapped', data=self.batch.pos_wrapped)
-        store.create_dataset('pos_unwrapped', data=self.batch.pos_unwrapped)
-        if self.batch.vel_corrected is not None:
-            store.create_dataset('velocities', data=self.batch.vel_corrected)
-        if self.batch.atom_charges is not None:
-            store.create_dataset('charges', data=self.batch.atom_charges)
-        if self.batch.box is not None:
-            store.create_dataset('box', data=self.batch.box)
+        return cls(hdf5_dictionary=hdf5_dictionary, key_mapping=key_mapping)
 
+    def write_to_file(
+        self,
+        root: str = "./",
+        filename_prefix: Optional[str] = "trajectory",
+        chosen_fields: Optional[Set[str]] = None,
+        **h5py_kwargs,
+    ):
+        import h5py
+        
+        if not os.path.exists(root):
+            os.makedirs(root, exist_ok=True)
 
-# --------------------- Helper functions ---------------------------------
+        if chosen_fields is None:
+            chosen_fields = self.available_fields
 
-def _unwrap_positions_fractional(positions: np.ndarray, boxes: np.ndarray) -> np.ndarray:
-    """Unwrap a trajectory of positions using fractional coordinates.
+        if not self._validate_chosen_fields(chosen_fields):
+            raise KeyError(
+                "Some elements of chosen fields are not available in the trajectory or minimum requirements (atomic numbers and positions) not satisfied."
+            )
 
-    This function works when the cell changes between frames by converting
-    Cartesian positions to fractional coordinates via the inverse of the box
-    matrix for each frame and tracking integer image changes between frames.
+        path_to_file = os.path.join(root, f"{filename_prefix}.h5")
 
-    Parameters
-    ----------
-    positions : (n_frames, n_atoms, 3) array
-    boxes : (n_frames, 3, 3) array of box matrices (row vectors)
+        with h5py.File(path_to_file, 'w') as h5file:
+            for field in chosen_fields:
+                if field in self.data:
+                    data_key = self.mapping_available_fields[field]
+                    h5file.create_dataset(data_key, data=self.data[data_key], **h5py_kwargs)
 
-    Returns
-    -------
-    unwrapped : (n_frames, n_atoms, 3)
-    """
-    nframes, natoms, _ = positions.shape
-    frac = np.empty_like(positions)
-    inv_boxes = np.empty_like(boxes)
-    for t in range(nframes):
-        B = boxes[t]
-        try:
-            inv_boxes[t] = np.linalg.inv(B)
-        except Exception:
-            # fallback to diagonal assumption
-            inv_boxes[t] = np.diag(1.0 / np.diag(B))
-        frac[t] = positions[t] @ inv_boxes[t].T
+def compute_atomic_displacement_vectors(
+    trajectory_data: Union[List[ase.Atoms], Dict],
+    time_step: Optional[int] = 1,
+    time_between_frames: Optional[float] = 1.0,
+    key_mapping: Optional[Dict[str, str]] = {},
+):
 
-    # cumulative integer image shifts for each atom
-    cum_shifts = np.zeros((natoms, 3), dtype=int)
-    unwrapped = np.empty_like(positions)
-    unwrapped[0] = positions[0].copy()
+    if (isinstance(trajectory_data, list) and 
+        isinstance(trajectory_data[0], ase.Atoms)):
+        trajectory_type = "ase"
+    elif isinstance(trajectory_data, dict):
+        if (POSITIONS_KEY in trajectory_data or 
+            key_mapping.get(POSITIONS_KEY) in trajectory_data):
+            trajectory_type = "hdf5"
+        
+    else:
+        trajectory_type = "unknown"
+        
+    n_frames = (
+        len(trajectory_data)
+        if trajectory_type == "ase"
+        else len(trajectory_data.get(
+            key_mapping.get(POSITIONS_KEY, POSITIONS_KEY), 
+            trajectory_data.get(POSITIONS_KEY, [])
+        ))
+    )
 
-    for t in range(1, nframes):
-        # delta between fractional coords
-        df = frac[t] - frac[t - 1]
-        # bring df to nearest image by rounding
-        shifts = np.round(df).astype(int)
-        cum_shifts += shifts  # broadcast per-atom
-        # unwrapped fractional coords
-        frac_unwrapped = frac[t] + cum_shifts
-        # convert back to cartesian using current box (keeps coordinates consistent
-        # with the current frame's box vectors)
-        unwrapped[t] = frac_unwrapped @ boxes[t].T
+    if time_step >= n_frames:
+        raise ValueError(
+            "Unphysical value for time_step which should be smaller than the number of frames"
+        )
 
-    return unwrapped
+    positions = (
+        np.asarray([frame.positions for frame in trajectory_data])
+        if trajectory_type == "ase"
+        else trajectory_data[key_mapping[POSITIONS_KEY]]
+    )
+    displacement_vectors = np.asarray(
+        [
+            frame2 - frame1
+            for frame1, frame2 in zip(positions[:-time_step], positions[time_step:])
+        ]
+    )
 
+    lattice_vectors = (
+        trajectory_data[0].cell
+        if trajectory_type == "ase"
+        else trajectory_data.get(key_mapping.get(CELL_KEY), [])
+    )
+    pbc = (
+        trajectory_data[0].pbc
+        if trajectory_type == "ase"
+        else trajectory_data.get(key_mapping.get(PBC_KEY), [False, False, False])
+    )
+    if all(pbc):
+        displacement_vectors = align_vectors_with_periodicity(
+            displacement_vectors, lattice_vectors
+        )
+    if trajectory_type == "ase":
+        [
+            frame.arrays.__setitem__(DISPLACEMENTS_KEY, displacement)
+            for frame, displacement in zip(
+                trajectory_data[:-time_step], displacement_vectors
+            )
+        ]
+        [
+            frame.info.__setitem__(TIMESTEP_KEY, time_between_frames * time_step)
+            for frame in trajectory_data[:-time_step]
+        ]
+        
+    elif  trajectory_type == "hdf5":
+        trajectory_data[DISPLACEMENTS_KEY] = displacement_vectors
+        trajectory_data[TIMESTEP_KEY] = np.array([time_between_frames * time_step])    
+    else:
+        trajectory_data[DISPLACEMENTS_KEY] = displacement_vectors
+        trajectory_data[TIMESTEP_KEY] = np.array([time_between_frames * time_step])
 
-def _compute_vel_from_positions(positions: np.ndarray, dt: float) -> np.ndarray:
-    """Compute velocities from unwrapped positions using central differences.
-
-    Uses forward/backward differences at the edges.
-    """
-    nframes = positions.shape[0]
-    vel = np.zeros_like(positions)
-    if nframes == 1:
-        return vel
-    # central differences interior
-    vel[1:-1] = (positions[2:] - positions[:-2]) / (2.0 * dt)
-    # endpoints: forward/backward
-    vel[0] = (positions[1] - positions[0]) / dt
-    vel[-1] = (positions[-1] - positions[-2]) / dt
-    return vel
+    return trajectory_data
 
 
-def _remove_com_velocity(velocities: np.ndarray) -> np.ndarray:
-    """Subtract center-of-mass velocity per frame.
+def get_desired_field_values_of_next_frame(
+    fields: List,
+    trajectory_data: Union[List[ase.Atoms], Dict],
+    time_step: Optional[int] = 1,
+    key_mapping: Optional[Dict[str, str]] = {},
+):
+    if (isinstance(trajectory_data, list) and 
+        isinstance(trajectory_data[0], ase.Atoms)):
+        trajectory_type = "ase"
+    elif isinstance(trajectory_data, dict):
+        if (POSITIONS_KEY in trajectory_data or 
+            key_mapping.get(POSITIONS_KEY) in trajectory_data):
+            trajectory_type = "hdf5"
+    else:
+        trajectory_type = "unknown"
+    
+    n_frames = (
+        len(trajectory_data)
+        if trajectory_type == "ase"
+        else len(trajectory_data.get(key_mapping[POSITIONS_KEY]))
+    )
 
-    Assumes uniform masses unless mass info is provided elsewhere.
-    """
-    # uniform mass simplification
-    com = np.mean(velocities, axis=1, keepdims=True)
-    return velocities - com
+    if time_step >= n_frames:
+        raise ValueError(
+            "Unphysical value for time_step which should be smaller than the number of frames"
+        )
 
+    if trajectory_type == "ase":
+        for field in fields:
+            new_field = f"{UPDATE_KEY}_{field}"
+            if field in ASE_INFO_FIELDS:
+                [
+                    frame.info.__setitem__(
+                        new_field,
+                        trajectory_data[count + time_step].info[key_mapping[field]],
+                    )
+                    for count, frame in enumerate(trajectory_data[:-time_step])
+                ]
 
-# --------------------------- CLI ---------------------------------------
-if __name__ == '__main__':
-    import argparse
+            else:
+                [
+                    frame.arrays.__setitem__(
+                        new_field,
+                        trajectory_data[count + time_step].arrays[key_mapping[field]],
+                    )
+                    for count, frame in enumerate(trajectory_data[:-time_step])
+                ]
 
-    parser = argparse.ArgumentParser(description='Trajectory reader & processor')
-    parser.add_argument('input', help='Input trajectory file')
-    parser.add_argument('--backend', choices=['ase', 'mda', 'mdtraj'], help='Force backend')
-    parser.add_argument('--fmt', help='Format hint (e.g. lammps, xyz, dcd)')
-    parser.add_argument('--dt', type=float, default=None, help='Time-step for velocity recomputation')
-    parser.add_argument('--recompute-vel', action='store_true', help='Recompute velocities from positions')
-    parser.add_argument('--out-format', choices=['hdf5', 'npz', 'extxyz', 'zarr'], 
-                       default='hdf5', help='Output format')
-    parser.add_argument('--out', default='processed', help='Output path (extension may be added)')
-    args = parser.parse_args()
+    elif trajectory_type == "hdf5":
+        for field in fields:
+            new_field = f"{UPDATE_KEY}_{field}"
+            field_key = key_mapping.get(field, field)
+            if field_key in trajectory_data:
+                trajectory_data[new_field] = trajectory_data[field_key][time_step:]
+            else:
+                raise KeyError(f"Field {field} not found in HDF5 data")
 
-    # Add appropriate extension if not present
-    outpath = args.out
-    if args.out_format == 'hdf5' and not outpath.endswith(('.h5', '.hdf5')):
-        outpath += '.h5'
-    elif args.out_format == 'npz' and not outpath.endswith('.npz'):
-        outpath += '.npz'
-    elif args.out_format == 'extxyz' and not outpath.endswith(('.xyz', '.extxyz')):
-        outpath += '.xyz'
-    elif args.out_format == 'zarr' and not outpath.endswith('.zarr'):
-        outpath += '.zarr'
+    return trajectory_data
 
-    tp = TrajectoryProcessor(backend=args.backend)
-    tp.load(args.input, fmt=args.fmt)
-    tp.process(recompute_velocities=args.recompute_vel, dt=args.dt)
-    tp.save(outpath, format=args.out_format)
-
-    print(f"Saved processed trajectory to {outpath}")
