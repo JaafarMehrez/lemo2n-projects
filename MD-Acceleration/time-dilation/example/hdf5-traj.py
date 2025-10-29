@@ -3,21 +3,25 @@ import numpy as np
 import h5py
 from trajectory_processor import ASETrajectory, HDF5Trajectory
 from _keys import (
-    POSITIONS_KEY, PARTIAL_CHARGES_KEY, PBC_KEY, CELL_KEY, 
-    DISPLACEMENTS_KEY, UPDATE_PARTIAL_CHARGES_KEY
+    POSITIONS_KEY, VELOCITIES_KEY, PARTIAL_CHARGES_KEY, PBC_KEY, CELL_KEY, DISPLACEMENTS_KEY, 
+    UPDATE_PARTIAL_CHARGES_KEY, UPDATE_VELOCITIES_KEY
 )
 
-ROOT = "./"
-FILENAME = "dump.lammpstrj"
-OUT_PREFIX = "traj_with_displacement"
+ROOT = "./data/"
+FILENAME = "dump-100.lammpstrj"
+OUT_PREFIX = "traj_hdf5"
 HDF5_PREFIX = "traj_hdf5"
 FRAME_DT_FS = None
+
+time_between_frames = 50  # time interval between frames in fs
+timestep_forward = 100 # forward timestep
 
 traj = ASETrajectory.read_from_file(
     root=ROOT,
     filename=FILENAME,
+    frame_interval = time_between_frames,
     wrapper="lammps",
-    wrapper_kwargs={"lammps_units":"metal", "desired_units":"metal", "type_mapping":{1:14,2:8}},
+    wrapper_kwargs={"lammps_units":"real", "desired_units":"real", "type_mapping":{1:14,2:8}},
     index=":",
     apply_unwrapping=False,
 )
@@ -26,9 +30,8 @@ print(f"Original trajectory frames: {traj.n_frames}")
 print(f"Available fields: {traj.available_fields}")
 
 traj.compute_additional_fields(
-    add_fields={DISPLACEMENTS_KEY, PARTIAL_CHARGES_KEY, UPDATE_PARTIAL_CHARGES_KEY},
-    time_step=1,
-    time_step_in_fs=64,
+    add_fields={DISPLACEMENTS_KEY, PARTIAL_CHARGES_KEY, UPDATE_PARTIAL_CHARGES_KEY, UPDATE_VELOCITIES_KEY},
+    time_step=int(timestep_forward / time_between_frames),
     truncate=True
 )
 
@@ -38,7 +41,7 @@ traj.write_to_file(
     root=ROOT,
     filename_prefix=OUT_PREFIX,
     chosen_fields={POSITIONS_KEY, PARTIAL_CHARGES_KEY, PBC_KEY, CELL_KEY, 
-                   DISPLACEMENTS_KEY, UPDATE_PARTIAL_CHARGES_KEY},
+                   VELOCITIES_KEY, DISPLACEMENTS_KEY, UPDATE_VELOCITIES_KEY, UPDATE_PARTIAL_CHARGES_KEY},
     format="extxyz"
 )
 
@@ -51,7 +54,8 @@ def ase_trajectory_to_dict_simple(ase_traj, chosen_fields):
         'update_partial_charges': 'update_partial_charges',
         'displacements': 'displacements',
         'cell': 'cell',
-        'pbc': 'pbc'
+        'pbc': 'pbc',
+        'velocities': 'update_velocities'
     }
     
     for h5_key, ase_field in field_mapping.items():
@@ -78,7 +82,7 @@ def ase_trajectory_to_dict_simple(ase_traj, chosen_fields):
 
 chosen_fields = {
     POSITIONS_KEY, PARTIAL_CHARGES_KEY, PBC_KEY, CELL_KEY, 
-    DISPLACEMENTS_KEY, UPDATE_PARTIAL_CHARGES_KEY
+    VELOCITIES_KEY, DISPLACEMENTS_KEY, UPDATE_VELOCITIES_KEY, UPDATE_PARTIAL_CHARGES_KEY
 }
 
 print("\nConverting to dictionary for HDF5...")
