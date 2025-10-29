@@ -34,6 +34,7 @@ from _keys import (
     VELOCITIES_KEY,
     PARTIAL_CHARGES_KEY,
     UPDATE_PARTIAL_CHARGES_KEY,
+    ATOMIC_NUMBERS_KEY,
 )
 from atomic_computes import align_vectors_with_periodicity
 from misc import (
@@ -56,6 +57,7 @@ _TRAJECTORY_FIELDS: Set[str] = {
     TIMESTEP_KEY,
     PARTIAL_CHARGES_KEY,
     UPDATE_PARTIAL_CHARGES_KEY,
+    ATOMIC_NUMBERS_KEY,
 }
 
 
@@ -74,7 +76,7 @@ class Trajectory:
         if not chosen_fields.issubset(
             self.available_fields
         ) or not chosen_fields.issuperset(
-            set((POSITIONS_KEY, PARTIAL_CHARGES_KEY, PBC_KEY, CELL_KEY))
+            set((POSITIONS_KEY, ATOMIC_NUMBERS_KEY, PARTIAL_CHARGES_KEY, PBC_KEY, CELL_KEY))
         ):
             return False
         else:
