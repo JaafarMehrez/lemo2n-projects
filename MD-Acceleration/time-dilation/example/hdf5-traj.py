@@ -7,7 +7,7 @@ from _keys import (
     UPDATE_PARTIAL_CHARGES_KEY, UPDATE_VELOCITIES_KEY
 )
 
-ROOT = "./data/"
+ROOT = "../data/"
 FILENAME = "dump-100.lammpstrj"
 OUT_PREFIX = "traj_hdf5"
 HDF5_PREFIX = "traj_hdf5"

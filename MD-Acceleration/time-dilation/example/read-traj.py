@@ -10,7 +10,7 @@ from _keys import (
 time_between_frames = 50  # time interval between frames in fs
 timestep_forward = 100 # forward timestep
 
-ROOT = "./data/" 
+ROOT = "../data/" 
 FILENAME = "dump-100.lammpstrj"
 OUT_PREFIX = "traj_with_displacement"
 FRAME_DT_FS = None
