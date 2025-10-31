@@ -177,8 +177,6 @@ class AtomicGraphDataset(InMemoryDataset):
                     # Add atomic masses if missing
                     if 'atomic_masses' not in atoms_dictionary and 'atomic_numbers' in atoms_dictionary:
                         try:
-                            import numpy as np
-                            import ase
                             from ase.data import atomic_masses as ase_atomic_masses
                             atomic_numbers = np.array(atoms_dictionary['atomic_numbers'])
                             atoms_dictionary['atomic_masses'] = ase_atomic_masses[atomic_numbers]
@@ -191,7 +189,6 @@ class AtomicGraphDataset(InMemoryDataset):
                         atom_type_mapper=self.atom_type_mapper,
                     )
                     data_list.append(atomic_graph_data)
-
             else:
                 raw_data = ase.io.read(raw_path, format=filetype, index=":")
 
