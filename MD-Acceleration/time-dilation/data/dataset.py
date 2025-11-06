@@ -3,17 +3,17 @@ Dataset containing information (positions, species, etc.) of a collection of ato
 
 1. Added support for .h5 formats
 2. Added local unit test functions
+3. Include partial charge during graph construction, refer to AtomicGraph
+4. Add partial charge and updated partial charge to data augmentation [Not needed]
+    (partial charges are invariant under time reversal. So no change needed)
 
 TODO 
-
-1. Include partial charge during graph construction, refer to AtomicGraph
-2. Add partial charge and updated partial charge to data augmentation
 
 Future feature
 
 1. Replace data augmentation with NN with built-in physical symmetry preservation
 
-Modified by : Jaaar Mehrez
+Modified by : Jaafar Mehrez
 """
 
 import glob
@@ -26,7 +26,7 @@ import torch
 from numpy import load
 from torch_geometric.data import InMemoryDataset
 
-from _keys import POSITIONS_KEY
+from _keys import POSITIONS_KEY, PARTIAL_CHARGES_KEY
 from atomic_graph import AtomicGraph
 from misc import (
     convert_ase_atoms_to_dictionary,
@@ -104,7 +104,7 @@ class AtomicGraphDataset(InMemoryDataset):
     def process_pre_transform(self):
         pass
 
-    '''should perform the same thing for partial charge and updated partial charge -- later this augementation shall be removed'''
+    '''partial charges are invariant under time reversal. So no change needed'''
     
     def _augment_for_time_reversibility(self, atoms_dictionary):
         atoms_dictionary["update_velocities"], atoms_dictionary["velocities"] = (
@@ -132,6 +132,14 @@ class AtomicGraphDataset(InMemoryDataset):
                 raw_data = load(raw_path)
                 npz_dictionary = convert_npz_to_dictionary(raw_data)
                 npz_dictionary = format_values_in_dictionary(npz_dictionary)
+                import numpy as np
+                if PARTIAL_CHARGES_KEY not in atoms_dictionary:
+                    try:
+                        natoms = atoms_dictionary[POSITIONS_KEY].shape[0]
+                        atoms_dictionary[PARTIAL_CHARGES_KEY] = np.zeros((natoms,), dtype=float)
+                    except Exception as e:
+                    # If we can't infer natoms, skip adding and let AtomicGraph handle missing key.
+                        print(f"Warning: couldn't add default partial_charges: {e}")
                 for index in range(npz_dictionary[POSITIONS_KEY].shape[0]):
                     atoms_dictionary = {key: value[index] for key, value in npz_dictionary.items()}
                     atoms_dictionary = format_values_in_dictionary(atoms_dictionary)
@@ -157,7 +165,14 @@ class AtomicGraphDataset(InMemoryDataset):
                 with h5py.File(raw_path, 'r') as h5_file:
                     hd5_dictionary = convert_hd5_to_dictionary(h5_file)
                 hd5_dictionary = format_values_in_dictionary(hd5_dictionary)
-                
+                import numpy as np
+                if PARTIAL_CHARGES_KEY not in atoms_dictionary:
+                    try:
+                        natoms = atoms_dictionary[POSITIONS_KEY].shape[0]
+                        atoms_dictionary[PARTIAL_CHARGES_KEY] = np.zeros((natoms,), dtype=float)
+                    except Exception as e:
+                    # If we can't infer natoms, skip adding and let AtomicGraph handle missing key.
+                        print(f"Warning: couldn't add default partial_charges: {e}")
                 for index in range(hd5_dictionary[POSITIONS_KEY].shape[0]):
                     atoms_dictionary = {}
                     for key, value in hd5_dictionary.items():
@@ -191,18 +206,21 @@ class AtomicGraphDataset(InMemoryDataset):
                     data_list.append(atomic_graph_data)
             else:
                 raw_data = ase.io.read(raw_path, format=filetype, index=":")
-
+                
                 for index, config in enumerate(raw_data):
                     atoms_dictionary = convert_ase_atoms_to_dictionary(config)
                     atoms_dictionary = format_values_in_dictionary(atoms_dictionary)
+                    if 'partial_charges' not in atoms_dictionary:
+                        import numpy as np
+                        natoms = atoms_dictionary[POSITIONS_KEY].shape[0]
+                        atoms_dictionary['partial_charges'] = np.zeros((natoms,), dtype=float)
                     rev_atoms_dictionary = atoms_dictionary.copy()
-
                     atomic_graph_data = AtomicGraph.from_atoms_dict(
                         atoms_dict=atoms_dictionary,
                         r_cut=self.cutoff_radius,
                         atom_type_mapper=self.atom_type_mapper,
                     )
-
+                    
                     # time-reversed configuration, that's for symmetry, what if the NN is symmetry-aware? 
                     if (
                         "update_velocities" in rev_atoms_dictionary
@@ -213,9 +231,9 @@ class AtomicGraphDataset(InMemoryDataset):
                         )
                         data_list.append(rev_atomic_graph_data)
                     data_list.append(atomic_graph_data)
-
+                    
         torch.save(self.collate(data_list=data_list), self.processed_paths[0])
-
+        
 '''Some testing'''
 def test_extxyz_dataset():
     filename = "traj_with_displacement.extxyz"
@@ -228,11 +246,16 @@ def test_extxyz_dataset():
         time_reversibility=True,
         rename=True
     )
-
+    g = dataset[0]  # first graph
+    print("Has partial charges:", hasattr(g, 'partial_charges') or ('partial_charges' in g.keys()))
+    if hasattr(g, 'partial_charges'):
+        print("partial_charges shape:", g.partial_charges.shape)   # should be (N,1)
+        print("partial_charges dtype:", g.partial_charges.dtype)
+    
     print(f"Number of graphs: {len(dataset)}")
     print(f"First graph: {dataset[0]}")
     print(f"Number of nodes in first graph: {dataset[0].num_nodes}")
-
+    
     return dataset
 
 def test_h5_dataset():
@@ -246,10 +269,16 @@ def test_h5_dataset():
         time_reversibility=True
     )
     
+    g = dataset[0]  # first graph
+    print("Has partial charges:", hasattr(g, 'partial_charges') or ('partial_charges' in g.keys()))
+    if hasattr(g, 'partial_charges'):
+        print("partial_charges shape:", g.partial_charges.shape)   # should be (N,1)
+        print("partial_charges dtype:", g.partial_charges.dtype)
+    
     print(f"Number of graphs: {len(dataset)}")
     print(f"First graph: {dataset[0]}")
     print(f"Number of nodes in first graph: {dataset[0].num_nodes}")
     return dataset
 
-#test_extxyz_dataset()
-test_h5_dataset()
+test_extxyz_dataset()
+#test_h5_dataset()
