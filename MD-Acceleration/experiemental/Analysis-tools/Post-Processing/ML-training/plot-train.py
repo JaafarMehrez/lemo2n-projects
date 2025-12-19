@@ -7,7 +7,7 @@ def main(start_epoch=None, end_epoch=None):
     # Create plots directory
     out_dir = "plots"
     os.makedirs(out_dir, exist_ok=True)
-
+    
     # Define plot configurations
     plot_configs = [
         {
@@ -29,17 +29,17 @@ def main(start_epoch=None, end_epoch=None):
             "filename": "loss.png"
         }
     ]
-
+    
     # Process each plot configuration
     for config in plot_configs:
         fig, ax = plt.subplots(1, 1)
-
+        
         for metric in config["metrics"]:
             try:
                 event = event_accumulator.EventAccumulator(f"tb_log/{metric}")
                 event.Reload()
                 data = event.Scalars(config["scalar_tag"])
-
+                
                 # Filter data by epoch range if specified
                 if start_epoch is not None or end_epoch is not None:
                     filtered_data = []
@@ -50,23 +50,23 @@ def main(start_epoch=None, end_epoch=None):
                             continue
                         filtered_data.append(i)
                     data = filtered_data
-
+                
                 if not data:
                     print(f"No data in range for {metric}")
                     continue
-
+                
                 epochs = [i.step for i in data]
                 loss = [i.value for i in data]
                 ax.plot(epochs, loss, label=metric)
             except Exception as e:
                 print(f"Error loading {metric}: {e}")
-
+        
         ax.set_ylabel(config["ylabel"])
         ax.set_xlabel("Epoch")
         ax.legend()
         ax.grid(False)
         fig.tight_layout()
-
+        
         # Add epoch range to filename if specified
         filename = config["filename"]
         if start_epoch is not None and end_epoch is not None:
@@ -81,7 +81,7 @@ def main(start_epoch=None, end_epoch=None):
             name_part = filename.split('.')[0]
             ext_part = filename.split('.')[1] if '.' in filename else 'png'
             filename = f"{name_part}_to_epoch_{end_epoch}.{ext_part}"
-
+        
         png_path = os.path.join(out_dir, filename)
         fig.savefig(png_path, dpi=300, bbox_inches="tight")
         plt.close(fig)
@@ -89,10 +89,10 @@ def main(start_epoch=None, end_epoch=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Plot training metrics with epoch range')
-    parser.add_argument('--start-epoch', type=int, default=None,
+    parser.add_argument('--start-epoch', type=int, default=None, 
                        help='Starting epoch (inclusive)')
-    parser.add_argument('--end-epoch', type=int, default=None,
+    parser.add_argument('--end-epoch', type=int, default=None, 
                        help='Ending epoch (inclusive)')
-
+    
     args = parser.parse_args()
     main(start_epoch=args.start_epoch, end_epoch=args.end_epoch)
