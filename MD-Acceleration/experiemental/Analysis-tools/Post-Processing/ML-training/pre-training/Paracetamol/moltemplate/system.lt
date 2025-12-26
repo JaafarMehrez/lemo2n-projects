@@ -1,0 +1,11 @@
+import "paracetamol.lt"
+
+# Create a single molecule
+mol = new Paracetamol
+
+# Define box size (Vacuum simulation, so large box)
+write_once("Data Boundary") {
+  -20.0 20.0 xlo xhi
+  -20.0 20.0 ylo yhi
+  -20.0 20.0 zlo zhi
+}

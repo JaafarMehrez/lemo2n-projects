@@ -1,0 +1,79 @@
+import "oplsaa2024.lt"
+
+class Paracetamol inherits OPLSAA {
+
+  # 1. Explicit Masses to satisfy strict checker
+  write_once("Data Masses") {
+    @atom:145 12.011  # Benzene C
+    @atom:146 1.008   # Benzene H
+    @atom:169 15.999  # Phenol O
+    @atom:170 1.008   # Phenol H
+    @atom:226 14.007  # Anilide N
+    @atom:227 12.011  # Anilide C
+    @atom:228 15.999  # Anilide O
+    @atom:229 12.011  # Anilide Methyl C
+    @atom:230 1.008   # Anilide H (on N)
+    @atom:140 1.008   # Alkane H (on Methyl)
+  }
+
+  # 2. Atom Definitions (Correct Anilide Types)
+  write("Data Atoms") {
+    # -- Ring --
+    $atom:C1  $mol:. @atom:145   0.150   1.214   -0.589    0.002
+    $atom:C2  $mol:. @atom:145  -0.115  -0.115    0.180   -0.001
+    $atom:C3  $mol:. @atom:145  -0.115  -1.348   -0.457   -0.002
+    $atom:C4  $mol:. @atom:145   0.110  -1.252   -1.847   -0.002
+    $atom:C5  $mol:. @atom:145  -0.115   0.077   -2.610   -0.000
+    $atom:C6  $mol:. @atom:145  -0.115   1.310   -1.993    0.002
+    
+    # -- Ring H --
+    $atom:H2  $mol:. @atom:146   0.115  -0.188    1.259   -0.001
+    $atom:H3  $mol:. @atom:146   0.115  -2.381    0.134   -0.005
+    $atom:H5  $mol:. @atom:146   0.115   0.150   -3.689   -0.000
+    $atom:H6  $mol:. @atom:146   0.115   2.344   -2.585    0.004
+
+    # -- Hydroxyl --
+    $atom:O_OH $mol:. @atom:169 -0.683   2.450    0.083    0.004
+    $atom:H_OH $mol:. @atom:170  0.418   3.200   -0.479    0.004
+
+    # -- Anilide Group --
+    $atom:N1   $mol:. @atom:226 -0.500  -2.500   -2.500   -0.002
+    $atom:H_N  $mol:. @atom:230  0.300  -3.350   -1.950   -0.001  # Correct Anilide H
+    $atom:C_CO $mol:. @atom:227  0.500  -2.650   -3.900   -0.002
+    $atom:O_CO $mol:. @atom:228 -0.500  -1.650   -4.600   -0.002
+    
+    # -- Methyl --
+    $atom:C_Me $mol:. @atom:229 -0.180  -4.050   -4.450    0.000
+    $atom:H_M1 $mol:. @atom:140  0.060  -4.000   -5.540    0.016
+    $atom:H_M2 $mol:. @atom:140  0.060  -4.600   -4.100    0.803
+    $atom:H_M3 $mol:. @atom:140  0.060  -4.600   -4.100   -0.811
+  }
+
+  write("Data Bond List") {
+    # Ring
+    $bond:b1  $atom:C1 $atom:C2
+    $bond:b2  $atom:C2 $atom:C3
+    $bond:b3  $atom:C3 $atom:C4
+    $bond:b4  $atom:C4 $atom:C5
+    $bond:b5  $atom:C5 $atom:C6
+    $bond:b6  $atom:C6 $atom:C1
+    $bond:h2  $atom:C2 $atom:H2
+    $bond:h3  $atom:C3 $atom:H3
+    $bond:h5  $atom:C5 $atom:H5
+    $bond:h6  $atom:C6 $atom:H6
+
+    # Hydroxyl
+    $bond:oh1 $atom:C1 $atom:O_OH
+    $bond:oh2 $atom:O_OH $atom:H_OH
+
+    # Amide
+    $bond:n1  $atom:C4 $atom:N1
+    $bond:n2  $atom:N1 $atom:H_N
+    $bond:n3  $atom:N1 $atom:C_CO
+    $bond:co1 $atom:C_CO $atom:O_CO
+    $bond:co2 $atom:C_CO $atom:C_Me
+    $bond:m1  $atom:C_Me $atom:H_M1
+    $bond:m2  $atom:C_Me $atom:H_M2
+    $bond:m3  $atom:C_Me $atom:H_M3
+  }
+}
