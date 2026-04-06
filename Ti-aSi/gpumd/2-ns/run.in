@@ -1,0 +1,20 @@
+potential       nep89_20250409.txt
+
+minimize        sd 1.0e-6 10000
+velocity        300.0
+time_step       1.0
+
+ensemble        npt_mttk temp 300.0 300.0 iso 0.0 0.0 tperiod 100 pperiod 1000
+dump_thermo     100
+run             30000
+
+ensemble        npt_mttk temp 300.0 623.15 iso 0.0 0.0 tperiod 100 pperiod 1000
+dump_thermo     1000
+run             200000
+
+ensemble        npt_mttk temp 623.15 623.15 iso 0.0 0.0 tperiod 100 pperiod 1000
+dump_thermo     10000
+dump_force      10000
+dump_velocity   10000
+dump_xyz        -1 1 10000 dump.anneal.xyz velocity force potential virial
+run             2000000
