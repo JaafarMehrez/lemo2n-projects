@@ -1,0 +1,37 @@
+units           metal
+dimension       3
+boundary        p p p
+atom_style      atomic
+
+timestep        0.001
+
+read_data       Ti_aSi_PBC_rst.data
+
+group           si_atoms type 1
+group           ti_atoms type 2
+
+mass            1 28.0855  # Si
+mass            2 47.867   # Ti
+
+pair_style      tersoff
+pair_coeff      * * TSCBOP.tersoff Si Ti
+
+neighbor        2.0 bin
+neigh_modify    delay 0 every 1 check yes
+
+thermo          1000
+thermo_style    custom step temp pe press vol
+
+compute         msd_si si_atoms msd
+compute         msd_ti ti_atoms msd
+compute         pe_atom all pe/atom
+compute         ke_atom all ke/atom
+
+dump            1 all custom 10000 dump.continue.lammpstrj id type x y z vx vy vz c_pe_atom c_ke_atom
+
+fix             1 all npt temp 623.15 623.15 0.1 iso 0.0 0.0 1.0
+
+run             18000000
+
+undump          1
+unfix           1
