@@ -1,0 +1,20 @@
+units           metal
+dimension       3
+boundary        p p p
+atom_style      atomic
+
+read_data       Ti_hcp.data
+
+mass            1 47.867   # Ti
+
+pair_style      tersoff
+pair_coeff      * * TSCBOP.tersoff Ti
+
+velocity        all create 300.0 12345
+fix             1 all npt temp 300.0 300.0 0.1 aniso 0.0 0.0 1.0
+
+thermo          100
+thermo_style    custom step temp pe lx ly lz press
+dump            1 all custom 1000 dump.tersoff.lammpstrj id type x y z
+
+run             50000
